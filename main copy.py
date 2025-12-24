@@ -3,14 +3,14 @@ McGurk Etkisi Testi - PsychoPy Uygulaması
 Bu uygulama katılımcılara video göstererek ses algılarını test eder.
 """
 
-import gc
 from psychopy import prefs
-# Ses kütüphanesi önceliğini ayarla (PTB daha kararlıdır)
-prefs.hardware['audioLib'] = ['ptb', 'sounddevice', 'pygame']
+# Ses ayarlarını yapılandır (Düşük gecikme için)
+prefs.hardware['audioLatencyMode'] = 3  # Aggressive low latency
+prefs.hardware['audioLib'] = ['ptb', 'sounddevice', 'pyo', 'pygame']
+
 from psychopy import visual, core, event, logging
 import csv
 import os
-import random
 import warnings
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +18,10 @@ from pathlib import Path
 # PsychoPy logging seviyesini ayarla (uyarıları azalt)
 logging.console.setLevel(logging.ERROR)  # Sadece hataları göster
 
+# Uyarıları bastır (sdl2 ve ffpyplayer uyarıları için)
+warnings.filterwarnings('ignore', message='.*sdl2.*')
+warnings.filterwarnings('ignore', message='.*ffpyplayer.*')
+warnings.filterwarnings('ignore', message='.*audio.*synchronization.*')
 
 # Veri klasörünü oluştur
 data_dir = Path('data')
@@ -34,10 +38,18 @@ if not participant_name:
     participant_name = f"Katilimci_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     print(f"Varsayılan isim kullanılıyor: {participant_name}")
 
-speaker_id = input("Speaker ID (1-8): ").strip()
-if not speaker_id:
+# Speaker ID seçimi
+print("\nMevcut Speaker ID'ler: 1-8")
+speaker_id = input("Speaker ID seçin (1-8): ").strip()
+
+# Speaker ID validasyonu
+try:
+    speaker_id_int = int(speaker_id)
+    if speaker_id_int < 1 or speaker_id_int > 8:
+        raise ValueError("Speaker ID 1-8 arasında olmalıdır")
+except ValueError as e:
+    print(f"HATA: Geçersiz Speaker ID. Varsayılan olarak 1 kullanılıyor.")
     speaker_id = "1"
-    print(f"Varsayılan Speaker ID kullanılıyor: {speaker_id}")
 
 print(f"\nKatılımcı: {participant_name}")
 print(f"Speaker ID: {speaker_id}")
@@ -74,25 +86,31 @@ win = visual.Window(
     units='pix'
 )
 
-# Koşulları oluştur (Speaker ID'ye göre)
+# Koşulları dinamik olarak oluştur
+# Visual ve audio kombinasyonları: ba-ba, ba-da, ba-ga, da-da, da-ba, da-ga, ga-ga, ga-da, ga-ba
 conditions = []
-syllables = ['ba', 'da', 'ga']
+combinations = [
+    ('ba', 'ba'),  # visual, audio
+    ('ba', 'da'),
+    ('ba', 'ga'),
+    ('da', 'da'),
+    ('da', 'ba'),
+    ('da', 'ga'),
+    ('ga', 'ga'),
+    ('ga', 'da'),
+    ('ga', 'ba'),
+]
 
-# Tüm kombinasyonları oluştur (Visual x Audio)
-# Pairler: Vis-ba_Aud-ba, Vis-ba_Aud-da, ..., Vis-ga_Aud-ga
-for vis in syllables:
-    for aud in syllables:
-        video_file = f"Vis-{vis}_Aud-{aud}_Speaker-{speaker_id}.mp4"
-        # Etiket audio neyse o olacak (büyük harfle)
-        expected_sound = aud.upper()
-        
-        conditions.append({
-            'video_file': video_file,
-            'expected_sound': expected_sound
-        })
-
-random.shuffle(conditions)
-print(f"Toplam {len(conditions)} koşul oluşturuldu.")
+for visual_label, audio_label in combinations:
+    # Video dosya adını oluştur: Vis-{visual}_Aud-{audio}_Speaker-{speaker_id}.mp4
+    video_filename = f"Vis-{visual_label}_Aud-{audio_label}_Speaker-{speaker_id}.mp4"
+    # Etiket audio'ya göre olacak (audio neyse etiket o)
+    expected_sound = audio_label.upper()  # BA, DA, GA
+    
+    conditions.append({
+        'video_file': video_filename,
+        'expected_sound': expected_sound
+    })
 
 # Veri kayıt dosyası oluştur
 timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -101,7 +119,7 @@ data_file = data_dir / f"{participant_name}_{timestamp}.csv"
 # CSV başlıklarını yaz
 with open(data_file, 'w', newline='', encoding='utf-8') as f:
     writer = csv.writer(f)
-    writer.writerow(['Katilimci', 'VideoAdi', 'BeklenenCevap', 'Cevap', 'DogruMu', 'TepkiSuresi_ms'])
+    writer.writerow(['Katilimci', 'VideoAdi', 'Cevap', 'DogruCevap', 'DogruMu', 'TepkiSuresi_ms'])
 
 # Görsel öğeleri oluştur (ekran boyutuna göre dinamik)
 win_size = win.size
@@ -111,7 +129,7 @@ message_text = visual.TextStim(win, text='', color='white', height=int(win_size[
 # Cevap butonları oluştur (Rect + TextStim kombinasyonu)
 # Ekran boyutuna göre dinamik boyutlandırma
 win_size = win.size
-button_labels = ['BA', 'DA', 'GA']
+button_labels = ['BA', 'DA', 'GA', 'PA', 'KA', 'TA']
 buttons = []  # Her buton için (rect, text) tuple'ları saklayacağız
 
 # Butonları ekran boyutuna göre dinamik olarak yerleştir
@@ -176,26 +194,55 @@ for condition_idx, condition in enumerate(conditions):
     core.wait(0.5)
     
     # 2. Video oynat
-    movie = None  # Video nesnesini dışarıda tanımla (cevap ekranında kullanmak için)
+    movie = None  # Video nesnesini dışarıda tanımla
     try:
-        # PsychoPy versiyonuna göre MovieStim2 veya MovieStim kullan
+        # PsychoPy versiyonuna göre en uygun MovieStim sınıfını seç
         movie_class = None
         
-        # Önce hangi sınıfın mevcut olduğunu kontrol et
-        if hasattr(visual, 'MovieStim2'):
+        # Kullanıcının bildirdiği "daha önce çözülmüştü" durumunda MovieStim3 kullanılmıştı.
+        # MovieStim3 (MoviePy) öncelikli deniyoruz.
+        if hasattr(visual, 'MovieStim3'):
+            movie_class = visual.MovieStim3
+        elif hasattr(visual, 'MovieStim2'):
             movie_class = visual.MovieStim2
         elif hasattr(visual, 'MovieStim'):
             movie_class = visual.MovieStim
         else:
-            raise Exception("Video oynatma desteği bulunamadı. PsychoPy'nin güncel bir versiyonunu kullanın.")
+            raise Exception("Video oynatma desteği bulunamadı.")
         
-        # Video nesnesini oluştur (yukarıda konumlandır)
+        # Video nesnesini oluştur
         try:
             # Video pozisyonunu ekran boyutuna göre dinamik olarak ayarla
             win_size = win.size
-            video_pos = [0, int(win_size[1] * 0.15)]  # Ekranın üst %15'inde
-            # size parametresini belirtmiyoruz - PsychoPy otomatik algılayacak
-            # Eğer hata alırsak, pencere boyutuna göre ayarlayacağız
+            video_pos = [0, int(win_size[1] * 0.15)]
+            
+            # Video boyutunu belirle (None hatasını önlemek için somut bir boyut veriyoruz)
+            movie_size = [int(win_size[0] * 0.6), int(win_size[1] * 0.6)]
+            
+            # MovieStim3'ü en basit haliyle, varsayılan ayarlarla başlat
+            # autoStart veya noAudio gibi parametreleri vermiyoruz, varsayılanları kullansın
+            try:
+                movie = movie_class(
+                    win,
+                    str(video_path),
+                    pos=video_pos,
+                    size=movie_size, # Somut boyut veriyoruz, None değil
+                    flipVert=False,
+                    flipHoriz=False,
+                    loop=False
+                )
+            except TypeError:
+                # Parametre hatası olursa (çok eski versiyonlar)
+                movie = movie_class(
+                    win,
+                    str(video_path),
+                    pos=video_pos,
+                    flipVert=False,
+                    flipHoriz=False,
+                    loop=False
+                )
+        except Exception as create_error:
+             # Eğer somut boyutla da hata alırsak, bir de size parametresini hiç vermeden deneyelim
             try:
                 movie = movie_class(
                     win,
@@ -205,72 +252,91 @@ for condition_idx, condition in enumerate(conditions):
                     flipHoriz=False,
                     loop=False
                 )
-            except TypeError:
-                # Eğer size gerekliyse, pencere boyutunu kullan
-                win_size = win.size
-                movie = movie_class(
-                    win,
-                    str(video_path),
-                    pos=video_pos,
-                    size=win_size,
-                    flipVert=False,
-                    flipHoriz=False,
-                    loop=False
-                )
-        except Exception as create_error:
-            raise Exception(f"Video nesnesi oluşturulamadı: {create_error}")
+            except Exception as retry_error:
+                raise Exception(f"Video nesnesi oluşturulamadı: {create_error} | Retry: {retry_error}")
         
         if movie is None:
             raise Exception("Video oluşturulamadı (None döndü)")
         
-        # Video ve ses senkronizasyonu için hazırlık
-        # Video nesnesini hazırla ve ilk frame'i göster
-        try:
-            movie.draw()
-            win.flip()
-            # Kısa bir hazırlık süresi (ses ve görüntü buffer'larını hazırla)
-            core.wait(0.1)
-        except:
-            pass
-        
-        # Video oynatma döngüsü - 2 saniye sonra kesin çık
-        clock = core.Clock()
-        video_duration = 2.0  # 2 saniye sonra test ekranına geç
-        
-        while clock.getTime() < video_duration:
+        # Video oynatma döngüsü
+        # MovieStim3'te video oluşturulur oluşturulmaz (veya ilk draw'da) oynamaya başlar (varsayılan autoStart=True)
+        is_finished = False
+        while not is_finished:
             # Escape tuşu kontrolü
             keys = event.getKeys()
             if 'escape' in keys:
                 print("Kullanıcı Escape tuşuna bastı. Çıkılıyor...")
                 break
             
-            # Video çerçevesini çiz
+            # Bitiş kontrolü
+            if hasattr(movie, 'isFinished'):
+                is_finished = movie.isFinished
+            elif hasattr(movie, 'status'):
+                is_finished = (movie.status == visual.FINISHED)
+            
+            # Video çerçevesini çiz ve ekranı güncelle
             try:
                 movie.draw()
                 win.flip()
             except Exception as draw_error:
-                # Video çiziminde hata - ekranı güncelle ve devam et
                 win.flip()
         
-        # 2 saniye tamamlandı - test ekranına geç
-        print(f"Video gösterimi tamamlandı ({video_duration} saniye)")
+        # Video bitti
+        print(f"Video gösterimi tamamlandı")
+        
+        # Video nesnesini hemen durdur ve kapat
+        try:
+            if movie is not None:
+                if hasattr(movie, 'stop'):
+                    movie.stop()
+                # Bellek sızıntısını önlemek için
+                # MovieStim3 için özel bir kapatma gerekebilir
+                pass
+        except Exception as close_err:
+            print(f"Video durdurma uyarısı: {close_err}")
+            
+        # Kısa bir bekleme
+        core.wait(0.1)
         
     except Exception as e:
         import traceback
         print(f"HATA: Video oynatma hatası ({video_path}): {e}")
         print(f"Detay: {traceback.format_exc()}")
+        continue
         
-        # Hata durumunda da temizlik yap
-        if movie is not None:
-            try:
+        # Video nesnesini hemen durdur ve kapat (ses cihazını serbest bırakmak için)
+        try:
+            if movie is not None:
+                # Önce durdur
                 if hasattr(movie, 'stop'):
                     movie.stop()
-                del movie
+                if hasattr(movie, 'pause'):
+                    movie.pause()
+                # Sonra kapat
+                if hasattr(movie, 'close'):
+                    movie.close()
+                # Nesneyi None yap ki cevap ekranında kullanılmasın
                 movie = None
-                gc.collect()
-            except:
-                pass
+        except Exception as close_err:
+            print(f"Video kapatma uyarısı: {close_err}")
+            movie = None
         
+        # Kısa bir bekleme (ses cihazının tamamen kapanması için)
+        core.wait(0.1)
+        
+    except Exception as e:
+        import traceback
+        print(f"HATA: Video oynatma hatası ({video_path}): {e}")
+        print(f"Detay: {traceback.format_exc()}")
+        # Hata durumunda da video nesnesini kapat
+        try:
+            if movie is not None:
+                if hasattr(movie, 'stop'):
+                    movie.stop()
+                if hasattr(movie, 'close'):
+                    movie.close()
+        except:
+            pass
         continue
     
     # 3. Cevap ekranı (videonun altında)
@@ -304,15 +370,8 @@ for condition_idx, condition in enumerate(conditions):
             response_received = True
             break
         
-        # Video son karesini ve cevap ekranını çiz
-        try:
-            # Video nesnesi hala yaşıyorsa son kareyi çiz
-            # Eğer temizlendiyse atla
-            if movie is not None:
-                movie.draw()  # Video son karesini göster
-        except:
-            pass  # Video çizilemezse devam et
-        
+        # Cevap ekranını çiz (video kapatıldığı için çizmiyoruz)
+        # Video son karesini göstermek isterseniz, video kapatmadan önce son frame'i kaydedebilirsiniz
         response_text.draw()
         for button in buttons:
             button['rect'].draw()
@@ -352,33 +411,32 @@ for condition_idx, condition in enumerate(conditions):
     
     # Veriyi kaydet
     if response:
+        # Cevabın doğru olup olmadığını kontrol et
+        dogru_mu = 1 if response.upper() == condition['expected_sound'].upper() else 0
+        
         with open(data_file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
                 participant_name,
                 condition['video_file'],
-                condition['expected_sound'],
                 response,
-                1 if response == condition['expected_sound'] else 0,
+                condition['expected_sound'],  # Doğru cevap (etiket)
+                dogru_mu,  # Doğru ise 1, yanlış ise 0
                 f"{reaction_time:.2f}" if reaction_time else ""
             ])
     
-    # Denemeler arası kısa bekleme
-    # TEMİZLİK: Bir sonraki videoya geçmeden önce ses kanalını serbest bırak
+    # Video nesnesi zaten kapatıldı (yukarıda), burada sadece temizlik yapıyoruz
     if movie is not None:
         try:
-            # Video nesnesini durdur (sesi keser)
             if hasattr(movie, 'stop'):
                 movie.stop()
-            # Bazı PsychoPy versiyonlarında pause/stop yeterli olmayabilir
-            # Açıkça belleği temizle
-            del movie
-            movie = None
-            # Çöp toplayıcıyı zorla çalıştır (C++ kaynaklarını serbest bırakmak için)
-            gc.collect()
-        except Exception as e:
-            print(f"Uyarı: Video temizlenirken hata: {e}")
-
+            if hasattr(movie, 'close'):
+                movie.close()
+        except:
+            pass
+        movie = None
+    
+    # Denemeler arası kısa bekleme
     if condition_idx < len(conditions) - 1:
         message_text.text = 'Bir sonraki denemeye hazır olun...'
         message_text.draw()

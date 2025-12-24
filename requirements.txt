@@ -1,0 +1,10 @@
+psychopy>=2023.2.0
+moviepy>=1.0.3
+psychopy
+psychtoolbox
+pygame
+imageio
+imageio-ffmpeg
+numpy
+pandas
+customtkinter
