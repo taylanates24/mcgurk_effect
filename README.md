@@ -1,1 +1,1 @@
-# mcgurk_effect
+# McGurk Effect Experiment App
